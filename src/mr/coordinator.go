@@ -5,19 +5,17 @@ import "net"
 import "os"
 import "net/rpc"
 import "net/http"
+import "plugin"
+import "io"
+import "fmt"
 
 type Coordinator struct {
 	// Your definitions here.
 
 }
 
-// Your code here -- RPC handlers for the worker to call.
-
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
+func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
+	reply.fileName = "69"
 	return nil
 }
 
@@ -39,10 +37,6 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
 	ret := false
-	ret = true // just to run the tests
-
-	// Your code here.
-
 	return ret
 }
 
@@ -52,8 +46,23 @@ func (c *Coordinator) Done() bool {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
-	// Your code here.
+	intermediate := []KeyValue{}
+	for _, filename := range os.Args[2:] {
+		file, err := os.Open(filename)
+		if err != nil {
+			log.Fatalf("cannot open %v", filename)
+		}
+		_, err = io.ReadAll(file)
+		if err != nil {
+			log.Fatalf("cannot read %v", filename)
+		}
+		file.Close()
+	}
 
+	fmt.Println("[DEBGU]: Intermediate files:")
+	for k, v := range intermediate {
+		fmt.Printf("\n %v : %v ", k, v)
+	}
 	c.server()
 	return &c
 }
