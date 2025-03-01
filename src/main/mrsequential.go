@@ -28,6 +28,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Read "wc.so" file to load the plugins.
 	mapf, reducef := loadPlugin(os.Args[1])
 
 	//
@@ -37,15 +38,16 @@ func main() {
 	//
 	intermediate := []mr.KeyValue{}
 	for _, filename := range os.Args[2:] {
-		file, err := os.Open(filename)
-		if err != nil {
-			log.Fatalf("cannot open %v", filename)
-		}
-		content, err := ioutil.ReadAll(file)
+		// file, err := os.Open(filename)
+		// if err != nil {
+		// 	log.Fatalf("cannot open %v", filename)
+		// }
+		content, err := os.ReadFile(filename)
+		// content, err := ioutil.ReadAll(file)
 		if err != nil {
 			log.Fatalf("cannot read %v", filename)
 		}
-		file.Close()
+		// file.Close()
 		kva := mapf(filename, string(content))
 		intermediate = append(intermediate, kva...)
 	}
