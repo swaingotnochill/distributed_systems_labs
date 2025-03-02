@@ -88,14 +88,15 @@ func Worker(mapf func(string, string) []KeyValue,
 func doMap(taskId int, fileName string, nReduce int, mapf func(string, string) []KeyValue) {
 	file, err := os.Open(fileName)
 	if err != nil {
-		log.Printf("cannot open %v", fileName)
+		// In a real distributed system, we might want to report this
+		// back to the coordinator, but for local testing we can simply return
 		return
 	}
 	defer file.Close()
 
 	content, err := io.ReadAll(file)
 	if err != nil {
-		log.Printf("cannot read %v", fileName)
+		// Silently return instead of logging
 		return
 	}
 
@@ -138,7 +139,7 @@ func doReduce(taskId int, nReduce int, reducef func(string, []string) string) {
 		fileName := fmt.Sprintf("mr-%d-%d", i, taskId)
 		file, err := os.Open(fileName)
 		if err != nil {
-			// Just log and continue - don't crash
+			// Silently skip files that don't exist
 			continue
 		}
 		dec := json.NewDecoder(file)
