@@ -4,6 +4,12 @@ import "fmt"
 import "log"
 import "net/rpc"
 import "hash/fnv"
+import "plugin"
+import "os"
+import "time"
+import "io"
+import "encoding/json"
+import "sort"
 
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
@@ -18,6 +24,9 @@ func (a ByKey) Len() int           { return len(a) }
 func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
+// Global Intermediate Container to store files.
+type IntermediateKV []KeyValue
+
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
 func ihash(key string) int {
@@ -29,20 +38,150 @@ func ihash(key string) int {
 // main/mrworker.go calls this function.
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
+	// can use pid as workerid since its running in same machine. when
+	// running in a distributed environment, can use a combination
+	// of machin_id + pid
+	workerId := os.Getpid()
 
-	// worker asks for a task.
-	CallGetTask()
+	for {
+		// Get task from coordinator.
+		args := GetTaskArgs{WorkerId: workerId}
+		reply := GetTaskReply{}
 
+		ok := call("Coordinator.GetTask", &args, &reply)
+		if !ok {
+			time.Sleep(time.Second)
+			continue // if a call is not successfull in first try, we keep on making calls in subsequent tries.
+		}
+
+		if reply.JobDone {
+			return // entire mapreduce is done, so no need for worker to continue.
+		}
+
+		switch reply.TaskType {
+		case MAP:
+			doMap(reply.TaskId, reply.File, reply.NReduce, mapf)
+		case REDUCE:
+			doReduce(reply.TaskId, reply.NReduce, reducef)
+		}
+
+		// notify once tasks are completed.
+		completeArgs := TaskCompleteArgs{
+			TaskId:   reply.TaskId,
+			TaskType: reply.TaskType,
+			WorkerId: workerId,
+		}
+		if !call("Coordinator.TaskComplete", &completeArgs, &TaskCompleteReply{}) {
+			log.Printf("TaskComplete RPC failed for task %v", reply.TaskId)
+			time.Sleep(time.Second)
+		}
+	}
 }
 
-func CallGetTask() {
+func doMap(taskId int, fileName string, nReduce int, mapf func(string, string) []KeyValue) {
+	file, err := os.Open(fileName)
+	defer file.Close()
+
+	if err != nil {
+		log.Fatalf("cannot open %v", fileName)
+	}
+
+	content, err := io.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", fileName)
+	}
+
+	// apply map function.
+	kva := mapf(fileName, string(content))
+
+	// store intermediate key-value pairs in files so that it can be read
+	// back properly for reduce tasks. json/encoder can be used to
+	// encode the kva to json files and then decode them when apply reduce
+	// function.
+	encoders := make([]*json.Encoder, nReduce)
+	tempFiles := make([]*os.File, nReduce)
+
+	for i := 0; i < nReduce; i++ {
+		tempname := fmt.Sprintf("mr-%d-%d-temp", taskId, i)
+		tempFiles[i], _ = os.Create(tempname) // note this opens up a file. need to close post writing to it.
+		encoders[i] = json.NewEncoder(tempFiles[i])
+	}
+
+	// write to intermediate files. all of them are json encoded.
+	for _, kv := range kva {
+		bucket := ihash(kv.Key) % nReduce
+		_ = encoders[bucket].Encode(kv)
+	}
+
+	// close the files.
+	for i := 0; i < nReduce; i++ {
+		tempName := fmt.Sprintf("mr-%d-%d-temp", taskId, i)
+		oname := fmt.Sprintf("mr-%d-%d", taskId, i)
+		tempFiles[i].Close()
+		_ = os.Rename(tempName, oname)
+	}
+}
+
+func doReduce(taskId int, nReduce int, reducef func(string, []string) string) {
+	// read all the intermediate files.
+	intermediateKV := []KeyValue{}
+
+	for i := 0; i < nReduce; i++ {
+		fileName := fmt.Sprintf("mr-%d-%d", i, taskId)
+		file, err := os.Open(fileName)
+		if err != nil {
+			continue
+		}
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			err := dec.Decode(&kv)
+			if err != nil {
+				break
+			}
+			intermediateKV = append(intermediateKV, kv)
+		}
+		file.Close()
+	}
+
+	// sort them by keys.
+	sort.Sort(ByKey(intermediateKV))
+
+	// create output file.
+	oname := fmt.Sprintf("mr-out-%d", taskId)
+	tempFile := fmt.Sprintf("mr-out-%d-temp", taskId)
+	temp, _ := os.Create(tempFile)
+
+	// process for each key group.
+	i := 0
+	for i < len(intermediateKV) {
+		j := i + 1
+		for j < len(intermediateKV) && intermediateKV[j].Key == intermediateKV[i].Key {
+			j++
+		}
+
+		values := []string{}
+		for k := i; k < j; k++ {
+			values = append(values, intermediateKV[k].Value)
+		}
+		output := reducef(intermediateKV[i].Key, values)
+		fmt.Fprintf(temp, "%v %v\n", intermediateKV[i].Key, output)
+		i = j
+	}
+	temp.Close()
+	if err := os.Rename(tempFile, oname); err != nil {
+		_ = fmt.Errorf("Failed to create output file.")
+	}
+}
+
+func CallGetTask(task TaskType) {
 	args := GetTaskArgs{}
 
 	reply := GetTaskReply{}
 
 	ok := call("Coordinator.GetTask", &args, &reply)
 	if ok {
-		fmt.Printf("RPC: GetTask: %v\n", reply.fileName)
+		fmt.Printf("RPC: GetTask: %v\n", reply.File)
 	} else {
 		fmt.Printf("ERROR: RPC Call to \"GetTask\" failed.")
 	}
@@ -67,4 +206,25 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 
 	fmt.Println(err)
 	return false
+}
+
+// load the application Map and Reduce functions
+// from a plugin file, e.g. ../mrapps/wc.so
+func loadPlugin(filename string) (func(string, string) []KeyValue, func(string, []string) string) {
+	p, err := plugin.Open(filename)
+	if err != nil {
+		log.Fatalf("cannot load plugin %v", filename)
+	}
+	xmapf, err := p.Lookup("Map")
+	if err != nil {
+		log.Fatalf("cannot find Map in %v", filename)
+	}
+	mapf := xmapf.(func(string, string) []KeyValue)
+	xreducef, err := p.Lookup("Reduce")
+	if err != nil {
+		log.Fatalf("cannot find Reduce in %v", filename)
+	}
+	reducef := xreducef.(func(string, []string) string)
+
+	return mapf, reducef
 }

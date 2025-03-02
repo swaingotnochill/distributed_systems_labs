@@ -12,7 +12,7 @@ build_mrcoordinator: main/mrcoordinator.go
 	codesign --force --deep --sign - ./main/mrcoordinator
 
 run_mrcoordinator: build_mrcoordinator
-	./main/mrcoordinator pg-*.txt
+	./main/mrcoordinator ./main/pg-*.txt
 
 build_mrworker: mrapps/wc.go main/mrworker.go
 	go build -o ./main/mrworker ./main/mrworker.go
