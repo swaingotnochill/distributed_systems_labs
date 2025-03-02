@@ -1,21 +1,71 @@
 package mr
 
-import "log"
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
-import "plugin"
-import "io"
-import "fmt"
+import (
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
+	"sync"
+	"time"
+)
+
+// Co-ordinator assigns map task.
+// Map Task is based on file names.
+// Then we create intermediate files with a specific nReduce number.
+// Worker executes Reduce Task partitioned with nReduce.
 
 type Coordinator struct {
-	// Your definitions here.
+	mtx         sync.Mutex
+	nReduce     int
+	mapTasks    map[string]*Task
+	reduceTasks map[int]*Task
+	phase       Phase
+	done        bool
+	files       []string
+	taskTimeout time.Duration
+}
 
+type Phase int
+
+const (
+	MapPhase Phase = iota
+	ReducePhase
+	CompletePhase
+)
+
+type TaskStatus int
+
+const (
+	IDLE TaskStatus = iota
+	IN_PROGRESS
+	COMPLETED
+)
+
+type Task struct {
+	ID        int
+	Type      TaskType
+	File      string
+	Status    TaskStatus
+	StartTime time.Time
+	WorkerId  int
 }
 
 func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
-	reply.fileName = "69"
+	if args.taskType == MAP {
+		err := c.getMapTask(args, reply)
+		if err != nil {
+			return err
+		}
+	}
+
+	if args.taskType == REDUCE {
+		err := c.getReduceTask(args, reply)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -37,6 +87,7 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
 	ret := false
+
 	return ret
 }
 
@@ -44,25 +95,37 @@ func (c *Coordinator) Done() bool {
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{}
-
-	intermediate := []KeyValue{}
-	for _, filename := range os.Args[2:] {
-		file, err := os.Open(filename)
-		if err != nil {
-			log.Fatalf("cannot open %v", filename)
-		}
-		_, err = io.ReadAll(file)
-		if err != nil {
-			log.Fatalf("cannot read %v", filename)
-		}
-		file.Close()
+	// Initialize co-ordinator with Map phase, since we create a map task
+	// first.
+	c := Coordinator{
+		nReduce:     nReduce,
+		mapTasks:    make(map[string]*Task),
+		reduceTasks: make(map[int]*Task),
+		phase:       MapPhase,
+		files:       files,
+		taskTimeout: 10 * time.Second,
 	}
 
-	fmt.Println("[DEBGU]: Intermediate files:")
-	for k, v := range intermediate {
-		fmt.Printf("\n %v : %v ", k, v)
+	// Initialize map tasks.
+	for i, file := range files {
+		c.mapTasks[file] = &Task{
+			ID:     i,
+			Type:   MAP,
+			File:   file,
+			Status: IDLE,
+		}
 	}
+
+	// Initialize reduce tasks.
+	for i := 0; i < nReduce; i++ {
+		c.reduceTasks[i] = &Task{
+			ID:     i,
+			Type:   REDUCE,
+			Status: IDLE,
+		}
+	}
+
 	c.server()
+	// IMPORTANT: When all the files are processed, set c.job to "true".
 	return &c
 }
