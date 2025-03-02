@@ -154,7 +154,7 @@ func (c *Coordinator) assignMapTask(args *GetTaskArgs, reply *GetTaskReply) erro
 	// if all map tasks are done, move to reduce phase.
 	if allCompleted {
 		c.phase = ReducePhase
-		return nil
+		return c.assignReduceTask(args, reply)
 	}
 
 	// if some are in progress and none are IDLE, we wait.
@@ -183,9 +183,7 @@ func (c *Coordinator) assignMapTask(args *GetTaskArgs, reply *GetTaskReply) erro
 }
 
 func (c *Coordinator) assignReduceTask(args *GetTaskArgs, reply *GetTaskReply) error {
-
 	allCompleted := true
-	hasInProgress := false
 	hasIdle := false
 
 	for _, task := range c.reduceTasks {
@@ -194,7 +192,6 @@ func (c *Coordinator) assignReduceTask(args *GetTaskArgs, reply *GetTaskReply) e
 			continue
 		case IN_PROGRESS:
 			allCompleted = false
-			hasInProgress = true
 		case IDLE:
 			hasIdle = true
 			allCompleted = false
@@ -203,29 +200,32 @@ func (c *Coordinator) assignReduceTask(args *GetTaskArgs, reply *GetTaskReply) e
 
 	if allCompleted {
 		c.phase = CompletePhase
+		reply.JobDone = true
 		return nil
 	}
 
-	if hasInProgress && !hasIdle {
-		return nil
-	}
+	// Don't wait if there are IDLE tasks - assign them immediately
+	// Even if some are in progress
+	if hasIdle {
+		// look for IDLE reduce task to assign.
+		for id, task := range c.reduceTasks {
+			if task.Status == IDLE {
+				task.Status = IN_PROGRESS
+				task.StartTime = time.Now()
+				task.WorkerId = args.WorkerId
 
-	// look for IDLE reduce task to assign.
-	for id, task := range c.reduceTasks {
-		if task.Status == IDLE {
-			task.Status = IN_PROGRESS
-			task.StartTime = time.Now()
-			task.WorkerId = args.WorkerId
+				reply.TaskId = id
+				reply.TaskType = REDUCE
+				reply.NReduce = c.nReduce
+				reply.Phase = c.phase
+				reply.NMap = len(c.files)
 
-			reply.TaskId = id
-			reply.TaskType = REDUCE
-			reply.NReduce = c.nReduce
-			reply.Phase = c.phase
-			reply.NMap = c.getMapTaskCount()
-
-			return nil // exit after assigning one reduce task.
+				return nil // exit after assigning one reduce task.
+			}
 		}
 	}
+
+	// If we get here, all tasks are in-progress or completed, but not all completed
 	return nil
 }
 
@@ -235,29 +235,33 @@ func (c *Coordinator) TaskComplete(args *TaskCompleteArgs, reply *TaskCompleteRe
 
 	switch args.TaskType {
 	case MAP:
-		if task, exists := c.mapTasks[c.files[args.TaskId]]; exists {
+		if task, exists := c.mapTasks[c.files[args.TaskId]]; exists && task.WorkerId == args.WorkerId {
+			// Only mark as completed if the worker ID matches
 			task.Status = COMPLETED
 		}
 	case REDUCE:
-		if task, exists := c.reduceTasks[args.TaskId]; exists {
+		if task, exists := c.reduceTasks[args.TaskId]; exists && task.WorkerId == args.WorkerId {
+			// Only mark as completed if the worker ID matches
 			task.Status = COMPLETED
 		}
 	}
 
-	switch args.TaskType {
-	case MAP:
-		allMapsDone := true
+	// Check if we should transition phases
+	allMapDone := true
+	if c.phase == MapPhase {
 		for _, task := range c.mapTasks {
 			if task.Status != COMPLETED {
-				allMapsDone = false
+				allMapDone = false
 				break
 			}
 		}
-		if allMapsDone {
+		if allMapDone {
 			c.phase = ReducePhase
 		}
-	case REDUCE:
-		allReduceDone := true
+	}
+
+	allReduceDone := true
+	if c.phase == ReducePhase {
 		for _, task := range c.reduceTasks {
 			if task.Status != COMPLETED {
 				allReduceDone = false
@@ -268,6 +272,7 @@ func (c *Coordinator) TaskComplete(args *TaskCompleteArgs, reply *TaskCompleteRe
 			c.phase = CompletePhase
 		}
 	}
+
 	reply.Success = true
 	return nil
 }
@@ -278,6 +283,7 @@ func (c *Coordinator) checkTimeOuts() {
 	if c.phase == MapPhase {
 		for _, task := range c.mapTasks {
 			if task.Status == IN_PROGRESS && now.Sub(task.StartTime) > c.taskTimeout {
+				log.Printf("Map task %d (worker %d) timed out, resetting to IDLE", task.ID, task.WorkerId)
 				task.Status = IDLE
 				task.WorkerId = 0
 			}
@@ -285,6 +291,7 @@ func (c *Coordinator) checkTimeOuts() {
 	} else if c.phase == ReducePhase {
 		for _, task := range c.reduceTasks {
 			if task.Status == IN_PROGRESS && now.Sub(task.StartTime) > c.taskTimeout {
+				log.Printf("Reduce task %d (worker %d) timed out, resetting to IDLE", task.ID, task.WorkerId)
 				task.Status = IDLE
 				task.WorkerId = 0
 			}

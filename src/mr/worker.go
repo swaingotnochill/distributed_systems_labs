@@ -1,15 +1,17 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-import "plugin"
-import "os"
-import "time"
-import "io"
-import "encoding/json"
-import "sort"
+import (
+	"encoding/json"
+	"fmt"
+	"hash/fnv"
+	"io"
+	"log"
+	"net/rpc"
+	"os"
+	"plugin"
+	"sort"
+	"time"
+)
 
 // Map functions return a slice of KeyValue.
 type KeyValue struct {
@@ -51,11 +53,12 @@ func Worker(mapf func(string, string) []KeyValue,
 		ok := call("Coordinator.GetTask", &args, &reply)
 		if !ok {
 			time.Sleep(time.Second)
-			continue // if a call is not successfull in first try, we keep on making calls in subsequent tries.
+			continue
 		}
 
 		if reply.JobDone {
-			return // entire mapreduce is done, so no need for worker to continue.
+			// Only exit when coordinator explicitly says job is done
+			return
 		}
 
 		switch reply.TaskType {
@@ -63,6 +66,10 @@ func Worker(mapf func(string, string) []KeyValue,
 			doMap(reply.TaskId, reply.File, reply.NReduce, mapf)
 		case REDUCE:
 			doReduce(reply.TaskId, reply.NReduce, reducef)
+		default:
+			// If no task is assigned yet, wait a bit before asking again
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
 
 		// notify once tasks are completed.
@@ -73,22 +80,23 @@ func Worker(mapf func(string, string) []KeyValue,
 		}
 		if !call("Coordinator.TaskComplete", &completeArgs, &TaskCompleteReply{}) {
 			log.Printf("TaskComplete RPC failed for task %v", reply.TaskId)
-			time.Sleep(time.Second)
+			// Even if notification fails, don't exit - try to get a new task
 		}
 	}
 }
 
 func doMap(taskId int, fileName string, nReduce int, mapf func(string, string) []KeyValue) {
 	file, err := os.Open(fileName)
-	defer file.Close()
-
 	if err != nil {
-		log.Fatalf("cannot open %v", fileName)
+		log.Printf("cannot open %v", fileName)
+		return
 	}
+	defer file.Close()
 
 	content, err := io.ReadAll(file)
 	if err != nil {
-		log.Fatalf("cannot read %v", fileName)
+		log.Printf("cannot read %v", fileName)
+		return
 	}
 
 	// apply map function.
@@ -130,6 +138,7 @@ func doReduce(taskId int, nReduce int, reducef func(string, []string) string) {
 		fileName := fmt.Sprintf("mr-%d-%d", i, taskId)
 		file, err := os.Open(fileName)
 		if err != nil {
+			// Just log and continue - don't crash
 			continue
 		}
 		dec := json.NewDecoder(file)
@@ -150,7 +159,11 @@ func doReduce(taskId int, nReduce int, reducef func(string, []string) string) {
 	// create output file.
 	oname := fmt.Sprintf("mr-out-%d", taskId)
 	tempFile := fmt.Sprintf("mr-out-%d-temp", taskId)
-	temp, _ := os.Create(tempFile)
+	temp, err := os.Create(tempFile)
+	if err != nil {
+		log.Printf("Failed to create temp file: %v", err)
+		return
+	}
 
 	// process for each key group.
 	i := 0
@@ -170,7 +183,7 @@ func doReduce(taskId int, nReduce int, reducef func(string, []string) string) {
 	}
 	temp.Close()
 	if err := os.Rename(tempFile, oname); err != nil {
-		_ = fmt.Errorf("Failed to create output file.")
+		log.Printf("Failed to create output file: %v", err)
 	}
 }
 
