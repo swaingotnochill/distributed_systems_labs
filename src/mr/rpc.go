@@ -9,21 +9,36 @@ package mr
 import "os"
 import "strconv"
 
-//
-// example to show how to declare the arguments
-// and reply for an RPC.
-//
-
-type ExampleArgs struct {
-	X int
+type GetTaskArgs struct {
+	WorkerId int
 }
 
-type ExampleReply struct {
-	Y int
+type GetTaskReply struct {
+	TaskId   int
+	TaskType TaskType
+	File     string
+	NReduce  int
+	NMap     int
+	Phase    Phase
+	JobDone  bool
 }
 
-// Add your RPC definitions here.
+type TaskCompleteArgs struct {
+	TaskId   int
+	TaskType TaskType
+	WorkerId int
+}
 
+type TaskCompleteReply struct {
+	Success bool
+}
+
+type TaskType int
+
+const (
+	MAP TaskType = iota
+	REDUCE
+)
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.

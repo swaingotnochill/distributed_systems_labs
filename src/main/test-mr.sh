@@ -60,17 +60,17 @@ rm -f mr-*
 # make sure software is freshly built.
 (cd ../../mrapps && go clean)
 (cd .. && go clean)
-(cd ../../mrapps && go build $RACE -buildmode=plugin wc.go) || exit 1
-(cd ../../mrapps && go build $RACE -buildmode=plugin indexer.go) || exit 1
-(cd ../../mrapps && go build $RACE -buildmode=plugin mtiming.go) || exit 1
-(cd ../../mrapps && go build $RACE -buildmode=plugin rtiming.go) || exit 1
-(cd ../../mrapps && go build $RACE -buildmode=plugin jobcount.go) || exit 1
-(cd ../../mrapps && go build $RACE -buildmode=plugin early_exit.go) || exit 1
-(cd ../../mrapps && go build $RACE -buildmode=plugin crash.go) || exit 1
-(cd ../../mrapps && go build $RACE -buildmode=plugin nocrash.go) || exit 1
-(cd .. && go build $RACE mrcoordinator.go) || exit 1
-(cd .. && go build $RACE mrworker.go) || exit 1
-(cd .. && go build $RACE mrsequential.go) || exit 1
+(cd ../../mrapps && go build $RACE -buildmode=plugin wc.go && codesign --deep --force --sign - wc.so) || exit 1
+(cd ../../mrapps && go build $RACE -buildmode=plugin indexer.go && codesign --deep --force --sign - indexer.so) || exit 1
+(cd ../../mrapps && go build $RACE -buildmode=plugin mtiming.go && codesign --deep --force --sign - mtiming.so) || exit 1
+(cd ../../mrapps && go build $RACE -buildmode=plugin rtiming.go && codesign --deep --force --sign - rtiming.so) || exit 1
+(cd ../../mrapps && go build $RACE -buildmode=plugin jobcount.go && codesign --deep --force --sign - jobcount.so) || exit 1
+(cd ../../mrapps && go build $RACE -buildmode=plugin early_exit.go && codesign --deep --force --sign - early_exit.so) || exit 1
+(cd ../../mrapps && go build $RACE -buildmode=plugin crash.go && codesign --deep --force --sign - crash.so) || exit 1
+(cd ../../mrapps && go build $RACE -buildmode=plugin nocrash.go && codesign --deep --force --sign - nocrash.so) || exit 1
+(cd .. && go build $RACE mrcoordinator.go && codesign --deep --force --sign - mrcoordinator) || exit 1
+(cd .. && go build $RACE mrworker.go && codesign --deep --force --sign - mrworker) || exit 1
+(cd .. && go build $RACE mrsequential.go && codesign --deep --force --sign - mrsequential) || exit 1
 
 failed_any=0
 
@@ -78,6 +78,11 @@ failed_any=0
 # first word-count
 
 # generate the correct output
+#
+# #codesignature for mac.
+# codesign --force --deep --sign - ../mrsequential
+# codesign --force --deep --sign - ../../mrapps/wc.so
+#
 ../mrsequential ../../mrapps/wc.so ../pg*txt || exit 1
 sort mr-out-0 > mr-correct-wc.txt
 rm -f mr-out*
@@ -99,7 +104,7 @@ sleep 1
 wait $pid
 
 # since workers are required to exit when a job is completely finished,
-# and not before, that means the job has finished.
+# and not before, that means the job has finished..so
 sort mr-out* | grep . > mr-wc-all
 if cmp mr-wc-all mr-correct-wc.txt
 then
@@ -118,6 +123,7 @@ wait
 rm -f mr-*
 
 # generate the correct output
+# codesign --force --deep --sign - ../../mrapps/indexer.so
 ../mrsequential ../../mrapps/indexer.so ../pg*txt || exit 1
 sort mr-out-0 > mr-correct-indexer.txt
 rm -f mr-out*
